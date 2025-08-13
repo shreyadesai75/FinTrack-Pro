@@ -9,6 +9,16 @@ from gui.components.expense_form import ExpenseForm
 import db
 from utils import validate_date, validate_amount
 from ml.predictor import predict_category
+from core.alert_system import run_all_alerts
+from ml.anomaly_detector import detect_anomaly
+from analytics.stats import get_expense_dataframe
+from gui.notifier import show_warning, show_error
+from analytics.stats import get_available_filters, get_summary_stats
+from gui.notifier import system_notify
+from core.alert_system import run_all_alerts
+from core.alert_system import run_all_alerts
+import threading
+from gui.notifier import system_notify
 
 db.init_db()
 
@@ -51,7 +61,7 @@ class BudgetForm(tk.Toplevel):
         self.grab_set()
         self.transient(master)
         self.wait_visibility()
-        self.focus()    
+        self.focus()
 
     def refresh_budgets(self):
         self.budgets_list.delete(0, tk.END)
@@ -98,6 +108,8 @@ class BudgetForm(tk.Toplevel):
         self.cat_limit_var.set("")
         self.refresh_budgets()
         self.on_save()
+
+
 
 
 class ExpenseForm(tk.Toplevel):
@@ -213,6 +225,7 @@ class FinTrackGUI:
         self.root = root
         self.root.title("FinTrack Pro")
         self.root.geometry("900x480")
+        self.dashboard_frame = None  # ✅ Prevent AttributeError
         self._setup_ui()
         self.refresh_table()
 
@@ -225,12 +238,13 @@ class FinTrackGUI:
         ttk.Button(top_frame, text="Refresh", command=self.refresh_table).pack(side="left", padx=4)
         ttk.Button(top_frame, text="Set Budget", command=self.open_budget_form).pack(side="left", padx=4)
         ttk.Button(self.root, text="Open Dashboard", command=self.open_dashboard).pack(pady=10)
+        ttk.Button(self.root, text="Check Alerts", command=self.show_alerts).pack()  # ✅ Fixed
 
-        # Main content area that we will swap between "list" and "dashboard"
+        # Main content area
         self.content = ttk.Frame(self.root)
         self.content.pack(side="top", fill="both", expand=True)
 
-        # List (expenses) view inside content
+        # List view
         self.list_frame = ttk.Frame(self.content)
         self.list_frame.pack(side="top", fill="both", expand=True)
 
@@ -246,30 +260,48 @@ class FinTrackGUI:
 
         vsb = ttk.Scrollbar(self.list_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
-
-        # layout inside list_frame
         vsb.pack(side="right", fill="y")
         self.tree.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=(0, 10))
-
         self.tree.bind("<Double-1>", lambda e: self.open_edit_selected())
 
         self.status_var = tk.StringVar()
         ttk.Label(self.root, textvariable=self.status_var, anchor="w").pack(side="bottom", fill="x", padx=10, pady=6)
 
-   
-
     def close_dashboard(self):
-        """Return from dashboard to the expenses list."""
         if self.dashboard_frame is not None:
             self.dashboard_frame.destroy()
             self.dashboard_frame = None
         self.list_frame.pack(side="top", fill="both", expand=True)
 
+    def highlight_anomalies(self, anomalies):
+        if not anomalies:
+            return
+        self.tree.tag_configure("anomaly", background="lightcoral", foreground="white")
+        for child in self.tree.get_children():
+            values = self.tree.item(child, "values")
+            if values and values[1] in anomalies:
+                self.tree.item(child, tags=("anomaly",))
+
     def refresh_table(self):
         self.tree.delete(*self.tree.get_children())
         for exp in db.get_all_expenses():
-            self.tree.insert("", "end", values=(exp["id"], exp["date"], exp["category"], f"{exp['amount']:.2f}", exp["description"]))
+            self.tree.insert("", "end",
+                values=(exp["id"], exp["date"], exp["category"], f"{exp['amount']:.2f}", exp["description"])
+            )
         self.update_status()
+
+        # ✅ Detect anomalies
+        df = get_expense_dataframe()
+        anomalies = detect_anomaly(df)
+        for date, amount in anomalies.items():
+            msg = f"Unusual spend detected: ₹{amount} on {date}"
+            show_warning(msg)
+            system_notify("Anomaly", msg)
+
+        # ✅ Run alerts
+        self.show_alerts()
+
+        self.highlight_anomalies(anomalies)
 
     def update_status(self):
         today = datetime.today()
@@ -306,15 +338,14 @@ class FinTrackGUI:
             self.refresh_table()
             return
         ExpenseForm(self.root, on_save=self.refresh_table, expense=e)
+
     def open_dashboard(self):
-        """Swap the main content to the embedded dashboard."""
-        if getattr(self, "dashboard_frame", None) is not None:
-            return  # already open
+        if self.dashboard_frame is not None:
+            return
+        from gui.dashboard import DashboardFrame
         self.list_frame.pack_forget()
-        from gui.dashboard import DashboardFrame  # local import to avoid circular imports
         self.dashboard_frame = DashboardFrame(self.content, on_close=self.close_dashboard)
         self.dashboard_frame.pack(fill="both", expand=True)
-
 
     def delete_selected(self):
         expense_id = self.get_selected_expense_id()
@@ -337,6 +368,17 @@ class FinTrackGUI:
     def open_budget_form(self):
         BudgetForm(self.root, on_save=self.refresh_table)
 
+    # ✅ NEW method to show alerts in both refresh and button click
+    def show_alerts(self):
+        alerts = run_all_alerts()
+        for alert in alerts:
+            if alert["type"] == "warning":
+                show_warning(alert["message"])
+            elif alert["type"] == "danger":
+                show_error(alert["message"])
+            elif alert["type"] == "info":
+                system_notify("Budget Info", alert["message"])
+            system_notify(alert["type"], alert["message"])
 
 def main():
     root = tk.Tk()
@@ -347,7 +389,6 @@ def main():
         pass
     FinTrackGUI(root)
     root.mainloop()
-
 
 if __name__ == "__main__":
     main()
