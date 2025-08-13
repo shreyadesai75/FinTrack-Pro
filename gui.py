@@ -5,7 +5,6 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import Optional
 from datetime import datetime
-
 from gui.components.expense_form import ExpenseForm
 import db
 from utils import validate_date, validate_amount
@@ -52,7 +51,7 @@ class BudgetForm(tk.Toplevel):
         self.grab_set()
         self.transient(master)
         self.wait_visibility()
-        self.focus()
+        self.focus()    
 
     def refresh_budgets(self):
         self.budgets_list.delete(0, tk.END)
@@ -208,7 +207,7 @@ class ExpenseForm(tk.Toplevel):
         self.on_save()
         self.destroy()
 
-
+        self.dashboard_frame = None 
 class FinTrackGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -225,9 +224,18 @@ class FinTrackGUI:
         ttk.Button(top_frame, text="Delete Selected", command=self.delete_selected).pack(side="left", padx=4)
         ttk.Button(top_frame, text="Refresh", command=self.refresh_table).pack(side="left", padx=4)
         ttk.Button(top_frame, text="Set Budget", command=self.open_budget_form).pack(side="left", padx=4)
+        ttk.Button(self.root, text="Open Dashboard", command=self.open_dashboard).pack(pady=10)
+
+        # Main content area that we will swap between "list" and "dashboard"
+        self.content = ttk.Frame(self.root)
+        self.content.pack(side="top", fill="both", expand=True)
+
+        # List (expenses) view inside content
+        self.list_frame = ttk.Frame(self.content)
+        self.list_frame.pack(side="top", fill="both", expand=True)
 
         columns = ("id", "date", "category", "amount", "description")
-        self.tree = ttk.Treeview(self.root, columns=columns, show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(self.list_frame, columns=columns, show="headings", selectmode="browse")
         for col in columns:
             self.tree.heading(col, text=col.capitalize())
         self.tree.column("id", width=60, anchor="center")
@@ -235,14 +243,27 @@ class FinTrackGUI:
         self.tree.column("category", width=140, anchor="w")
         self.tree.column("amount", width=100, anchor="e")
         self.tree.column("description", width=480, anchor="w")
-        vsb = ttk.Scrollbar(self.root, orient="vertical", command=self.tree.yview)
+
+        vsb = ttk.Scrollbar(self.list_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
+
+        # layout inside list_frame
         vsb.pack(side="right", fill="y")
         self.tree.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=(0, 10))
+
         self.tree.bind("<Double-1>", lambda e: self.open_edit_selected())
 
         self.status_var = tk.StringVar()
         ttk.Label(self.root, textvariable=self.status_var, anchor="w").pack(side="bottom", fill="x", padx=10, pady=6)
+
+   
+
+    def close_dashboard(self):
+        """Return from dashboard to the expenses list."""
+        if self.dashboard_frame is not None:
+            self.dashboard_frame.destroy()
+            self.dashboard_frame = None
+        self.list_frame.pack(side="top", fill="both", expand=True)
 
     def refresh_table(self):
         self.tree.delete(*self.tree.get_children())
@@ -285,6 +306,15 @@ class FinTrackGUI:
             self.refresh_table()
             return
         ExpenseForm(self.root, on_save=self.refresh_table, expense=e)
+    def open_dashboard(self):
+        """Swap the main content to the embedded dashboard."""
+        if getattr(self, "dashboard_frame", None) is not None:
+            return  # already open
+        self.list_frame.pack_forget()
+        from gui.dashboard import DashboardFrame  # local import to avoid circular imports
+        self.dashboard_frame = DashboardFrame(self.content, on_close=self.close_dashboard)
+        self.dashboard_frame.pack(fill="both", expand=True)
+
 
     def delete_selected(self):
         expense_id = self.get_selected_expense_id()

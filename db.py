@@ -5,14 +5,53 @@ from datetime import datetime
 import os
 from utils import get_next_id,save_data,load_data
 from ml.model import train_model
-DB_FILE = "expenses.db"
+DB_NAME = "expenses.db" 
 
 
 def _get_conn():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     return conn
 
+def get_total_spent_for_month(month_str):
+    """
+    Returns the total spent for a given month in format YYYY-MM.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT SUM(amount) FROM expenses
+        WHERE strftime('%Y-%m', date) = ?
+    """, (month_str,))
+    total = cursor.fetchone()[0]
+    conn.close()
+    return total or 0.0
+
+def get_monthly_category_totals(month_str):
+    """
+    Returns a dictionary {category: total_amount} for the given month (YYYY-MM).
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT category, SUM(amount) FROM expenses
+        WHERE strftime('%Y-%m', date) = ?
+        GROUP BY category
+    """, (month_str,))
+    data = cursor.fetchall()
+    conn.close()
+    return {category: total for category, total in data}
+
+def get_total_budget():
+    """
+    Returns the total budget (sum of all category budgets).
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT SUM(amount) FROM budgets")
+    total = cursor.fetchone()[0]
+    conn.close()
+    return total or 0.0
 
 def init_db():
     """Create tables if they don't exist."""
@@ -74,6 +113,58 @@ def add_expense(date, amount, category, description):
             train_model()
 
     return new_id
+
+
+def get_expenses_for_month(year_month: str):
+    """Return list of rows (dicts) for expenses in YYYY-MM."""
+    with closing(_get_conn()) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, date, amount, category, description FROM expenses WHERE date LIKE ? ORDER BY date ASC, id ASC",
+            (f"{year_month}%",),
+        )
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+def get_monthly_category_totals(year_month: str):
+    """Return dict {category: total} for given YYYY-MM."""
+    with closing(_get_conn()) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT LOWER(category) AS cat, COALESCE(SUM(amount),0) AS total "
+            "FROM expenses WHERE date LIKE ? GROUP BY LOWER(category)",
+            (f"{year_month}%",),
+        )
+        out = {}
+        for row in cur.fetchall():
+            out[row["cat"]] = float(row["total"])
+        return out
+
+def get_monthly_series(months_back: int = 6):
+    """
+    Return list of (YYYY-MM, total) for the last `months_back` months, oldest -> newest.
+    """
+    from datetime import date
+    today = date.today()
+    ym_list = []
+    y, m = today.year, today.month
+    for _ in range(months_back):
+        ym_list.append((y, m))
+        m -= 1
+        if m == 0:
+            m = 12
+            y -= 1
+    ym_list.reverse()
+
+    out = []
+    with closing(_get_conn()) as conn:
+        cur = conn.cursor()
+        for (yy, mm) in ym_list:
+            ym = f"{yy:04d}-{mm:02d}"
+            cur.execute("SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE date LIKE ?", (f"{ym}%",))
+            total = float(cur.fetchone()["total"])
+            out.append((ym, total))
+    return out
 
 def get_all_expenses() -> List[Dict]:
     """Return all expenses as list of dicts, ordered by id."""
