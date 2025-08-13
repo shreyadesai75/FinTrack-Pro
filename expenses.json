@@ -1,0 +1,23 @@
+[
+  {
+    "id": 1,
+    "date": "2025-08-12",
+    "amount": 12.5,
+    "description": "Lunch",
+    "category": "Food"
+  },
+  {
+    "id": 2,
+    "date": "2025-08-13",
+    "amount": 222.0,
+    "description": "Swiggy order",
+    "category": "Shopping"
+  },
+  {
+    "id": 3,
+    "date": "2025-08-13",
+    "amount": 200.0,
+    "description": "ola ride",
+    "category": "Transport"
+  }
+]
