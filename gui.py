@@ -1,30 +1,19 @@
-"""
-gui.py 
-"""
 import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import Optional
 from datetime import datetime
-from gui.components.expense_form import ExpenseForm
 import db
 from utils import validate_date, validate_amount
 from ml.predictor import predict_category
 from core.alert_system import run_all_alerts
 from ml.anomaly_detector import detect_anomaly
 from analytics.stats import get_expense_dataframe
-from gui.notifier import show_warning, show_error
-from analytics.stats import get_available_filters, get_summary_stats
-from gui.notifier import system_notify
-from core.alert_system import run_all_alerts
-from core.alert_system import run_all_alerts
-import threading
-from gui.notifier import system_notify
+from gui.notifier import show_warning, show_error, system_notify
 
 db.init_db()
 
-
 class BudgetForm(tk.Toplevel):
-    """Popup to set budgets (category budgets + total budget)"""
+    """Popup to set budgets (category budgets + total budget + weekly total)."""
 
     def __init__(self, master, on_save):
         super().__init__(master)
@@ -33,29 +22,36 @@ class BudgetForm(tk.Toplevel):
         self.on_save = on_save
         pad = {"padx": 10, "pady": 6}
 
-        # Total budget
+        # Total budget (monthly)
         ttk.Label(self, text="Total Monthly Budget (optional):").grid(row=0, column=0, sticky="w", **pad)
         total = db.get_total_budget()
         self.total_var = tk.StringVar(value=str(total) if total is not None else "")
         ttk.Entry(self, textvariable=self.total_var).grid(row=0, column=1, **pad)
 
-        # Category budget
-        ttk.Label(self, text="Category:").grid(row=1, column=0, sticky="w", **pad)
-        self.cat_var = tk.StringVar()
-        ttk.Entry(self, textvariable=self.cat_var).grid(row=1, column=1, **pad)
+        # Weekly total budget (optional)
+        ttk.Label(self, text="Weekly Total Budget (optional):").grid(row=1, column=0, sticky="w", **pad)
+        weekly = db.get_weekly_budget()
+        self.weekly_var = tk.StringVar(value=str(weekly) if weekly is not None else "")
+        ttk.Entry(self, textvariable=self.weekly_var).grid(row=1, column=1, **pad)
 
-        ttk.Label(self, text="Category Limit:").grid(row=2, column=0, sticky="w", **pad)
+        # Category budget
+        ttk.Label(self, text="Category:").grid(row=2, column=0, sticky="w", **pad)
+        self.cat_var = tk.StringVar()
+        ttk.Entry(self, textvariable=self.cat_var).grid(row=2, column=1, **pad)
+
+        ttk.Label(self, text="Category Limit:").grid(row=3, column=0, sticky="w", **pad)
         self.cat_limit_var = tk.StringVar()
-        ttk.Entry(self, textvariable=self.cat_limit_var).grid(row=2, column=1, **pad)
+        ttk.Entry(self, textvariable=self.cat_limit_var).grid(row=3, column=1, **pad)
 
         btn_frame = ttk.Frame(self)
-        btn_frame.grid(row=3, column=0, columnspan=2, pady=(0, 10))
+        btn_frame.grid(row=4, column=0, columnspan=2, pady=(0, 10))
         ttk.Button(btn_frame, text="Save Total Budget", command=self.save_total).grid(row=0, column=0, padx=5)
-        ttk.Button(btn_frame, text="Save Category Budget", command=self.save_category).grid(row=0, column=1, padx=5)
-        ttk.Button(btn_frame, text="Close", command=self.destroy).grid(row=0, column=2, padx=5)
+        ttk.Button(btn_frame, text="Save Weekly Budget", command=self.save_weekly).grid(row=0, column=1, padx=5)
+        ttk.Button(btn_frame, text="Save Category Budget", command=self.save_category).grid(row=0, column=2, padx=5)
+        ttk.Button(btn_frame, text="Close", command=self.destroy).grid(row=0, column=3, padx=5)
 
-        self.budgets_list = tk.Listbox(self, height=6, width=40)
-        self.budgets_list.grid(row=4, column=0, columnspan=2, padx=10, pady=(0, 10))
+        self.budgets_list = tk.Listbox(self, height=6, width=48)
+        self.budgets_list.grid(row=5, column=0, columnspan=2, padx=10, pady=(0, 10))
         self.refresh_budgets()
 
         self.grab_set()
@@ -70,6 +66,9 @@ class BudgetForm(tk.Toplevel):
         total = db.get_total_budget()
         if total is not None:
             self.budgets_list.insert(tk.END, f"__TOTAL__ : {total:.2f}")
+        weekly = db.get_weekly_budget()
+        if weekly is not None:
+            self.budgets_list.insert(tk.END, f"__WEEKLY__ : {weekly:.2f}")
 
     def save_total(self):
         val = self.total_var.get().strip()
@@ -79,14 +78,29 @@ class BudgetForm(tk.Toplevel):
             self.refresh_budgets()
             self.on_save()
             return
-
         if not validate_amount(val):
             messagebox.showerror("Invalid", "Total budget must be a positive number.")
             return
-
         amt = float(val)
         db.set_total_budget(amt)
         messagebox.showinfo("Saved", f"Total monthly budget set to {amt:.2f}")
+        self.refresh_budgets()
+        self.on_save()
+
+    def save_weekly(self):
+        val = self.weekly_var.get().strip()
+        if val == "":
+            db.set_weekly_budget(0.0)
+            messagebox.showinfo("Saved", "Weekly budget set to 0.0 (treated as no limit).")
+            self.refresh_budgets()
+            self.on_save()
+            return
+        if not validate_amount(val):
+            messagebox.showerror("Invalid", "Weekly budget must be a positive number.")
+            return
+        amt = float(val)
+        db.set_weekly_budget(amt)
+        messagebox.showinfo("Saved", f"Weekly budget set to {amt:.2f}")
         self.refresh_budgets()
         self.on_save()
 
@@ -96,11 +110,9 @@ class BudgetForm(tk.Toplevel):
         if not cat:
             messagebox.showerror("Invalid", "Category name cannot be empty.")
             return
-
         if not validate_amount(limit_raw):
             messagebox.showerror("Invalid", "Category limit must be a positive number.")
             return
-
         amt = float(limit_raw)
         db.set_category_budget(cat, amt)
         messagebox.showinfo("Saved", f"Budget for '{cat}' set to {amt:.2f}")
@@ -108,8 +120,6 @@ class BudgetForm(tk.Toplevel):
         self.cat_limit_var.set("")
         self.refresh_budgets()
         self.on_save()
-
-
 
 
 class ExpenseForm(tk.Toplevel):
@@ -161,7 +171,6 @@ class ExpenseForm(tk.Toplevel):
         self.focus()
 
     def suggest_category(self):
-        """Predict category from description & amount using ML model."""
         description = self.description_text.get("1.0", "end").strip()
         amount_raw = self.amount_var.get().strip()
         if not description:
@@ -219,15 +228,26 @@ class ExpenseForm(tk.Toplevel):
         self.on_save()
         self.destroy()
 
-        self.dashboard_frame = None 
+
 class FinTrackGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("FinTrack Pro")
-        self.root.geometry("900x480")
-        self.dashboard_frame = None  # ✅ Prevent AttributeError
+        self.root.geometry("980x520")
         self._setup_ui()
         self.refresh_table()
+
+        # Show alerts at startup
+        self.check_alerts_and_show()
+
+        # Run anomaly detection at startup (already covered via alerts too)
+        try:
+            df = get_expense_dataframe()
+            anomalies = detect_anomaly(df)
+            for date, amount in anomalies.items():
+                show_warning(f"Unusual spend detected: ₹{amount} on {date}")
+        except Exception:
+            pass
 
     def _setup_ui(self):
         top_frame = ttk.Frame(self.root)
@@ -237,14 +257,20 @@ class FinTrackGUI:
         ttk.Button(top_frame, text="Delete Selected", command=self.delete_selected).pack(side="left", padx=4)
         ttk.Button(top_frame, text="Refresh", command=self.refresh_table).pack(side="left", padx=4)
         ttk.Button(top_frame, text="Set Budget", command=self.open_budget_form).pack(side="left", padx=4)
-        ttk.Button(self.root, text="Open Dashboard", command=self.open_dashboard).pack(pady=10)
-        ttk.Button(self.root, text="Check Alerts", command=self.show_alerts).pack()  # ✅ Fixed
+        ttk.Button(top_frame, text="Open Dashboard", command=self.open_dashboard).pack(side="left", padx=10)
+        ttk.Button(top_frame, text="Check Alerts", command=self.check_alerts_and_show).pack(side="left", padx=4)
 
-        # Main content area
+        # Monthly spend meter (progress bar)
+        self.progress = ttk.Progressbar(top_frame, length=220, mode="determinate", maximum=100)
+        self.progress.pack(side="right", padx=8)
+        self.progress_label = ttk.Label(top_frame, text="Budget usage: —")
+        self.progress_label.pack(side="right")
+
+        # Main content
         self.content = ttk.Frame(self.root)
         self.content.pack(side="top", fill="both", expand=True)
 
-        # List view
+        # List (expenses) view
         self.list_frame = ttk.Frame(self.content)
         self.list_frame.pack(side="top", fill="both", expand=True)
 
@@ -256,16 +282,20 @@ class FinTrackGUI:
         self.tree.column("date", width=110, anchor="center")
         self.tree.column("category", width=140, anchor="w")
         self.tree.column("amount", width=100, anchor="e")
-        self.tree.column("description", width=480, anchor="w")
+        self.tree.column("description", width=520, anchor="w")
 
         vsb = ttk.Scrollbar(self.list_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
+
         vsb.pack(side="right", fill="y")
         self.tree.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=(0, 10))
+
         self.tree.bind("<Double-1>", lambda e: self.open_edit_selected())
 
         self.status_var = tk.StringVar()
         ttk.Label(self.root, textvariable=self.status_var, anchor="w").pack(side="bottom", fill="x", padx=10, pady=6)
+
+        self.dashboard_frame = None
 
     def close_dashboard(self):
         if self.dashboard_frame is not None:
@@ -290,18 +320,40 @@ class FinTrackGUI:
             )
         self.update_status()
 
-        # ✅ Detect anomalies
-        df = get_expense_dataframe()
-        anomalies = detect_anomaly(df)
-        for date, amount in anomalies.items():
-            msg = f"Unusual spend detected: ₹{amount} on {date}"
-            show_warning(msg)
-            system_notify("Anomaly", msg)
+        # Detect anomalies (UI highlight + notif)
+        try:
+            df = get_expense_dataframe()
+            anomalies = detect_anomaly(df)
+            for date, amount in anomalies.items():
+                msg = f"Unusual spend detected: ₹{amount} on {date}"
+                show_warning(msg)
+                system_notify("Anomaly", msg)
+            self.highlight_anomalies(anomalies)
+        except Exception:
+            pass
 
-        # ✅ Run alerts
-        self.show_alerts()
+        # Also show tiered budget alerts here
+        self.check_alerts_and_show(toast_only=True)
 
-        self.highlight_anomalies(anomalies)
+    def check_alerts_and_show(self, toast_only: bool = False):
+        """
+        Gets alerts and shows them.
+        toast_only=True => avoid extra popups; use notifier/system tray.
+        """
+        alerts = run_all_alerts()
+        for alert in alerts:
+            t = alert.get("type", "info")
+            msg = alert.get("message", "")
+            # System tray / notifier always
+            system_notify(t.capitalize(), msg)
+            # GUI popups depending on severity (or when user clicks button)
+            if not toast_only or t in ("danger", "warning"):
+                if t == "danger":
+                    show_error(msg)
+                elif t == "warning":
+                    show_warning(msg)
+                else:
+                    messagebox.showinfo("Info", msg)
 
     def update_status(self):
         today = datetime.today()
@@ -313,6 +365,13 @@ class FinTrackGUI:
             status += f" / Budget: {total_budget:.2f}"
             if total_spent > total_budget:
                 status += "  [OVER BUDGET]"
+            # Update progress bar
+            pct = min(100.0, (total_spent / total_budget) * 100.0) if total_budget > 0 else 0.0
+            self.progress['value'] = pct
+            self.progress_label.config(text=f"Budget usage: {pct:.0f}%")
+        else:
+            self.progress['value'] = 0
+            self.progress_label.config(text="Budget usage: —")
         self.status_var.set(status)
 
     def open_add(self):
@@ -340,10 +399,10 @@ class FinTrackGUI:
         ExpenseForm(self.root, on_save=self.refresh_table, expense=e)
 
     def open_dashboard(self):
-        if self.dashboard_frame is not None:
+        if getattr(self, "dashboard_frame", None) is not None:
             return
-        from gui.dashboard import DashboardFrame
         self.list_frame.pack_forget()
+        from gui.dashboard import DashboardFrame
         self.dashboard_frame = DashboardFrame(self.content, on_close=self.close_dashboard)
         self.dashboard_frame.pack(fill="both", expand=True)
 
@@ -367,18 +426,6 @@ class FinTrackGUI:
 
     def open_budget_form(self):
         BudgetForm(self.root, on_save=self.refresh_table)
-
-    # ✅ NEW method to show alerts in both refresh and button click
-    def show_alerts(self):
-        alerts = run_all_alerts()
-        for alert in alerts:
-            if alert["type"] == "warning":
-                show_warning(alert["message"])
-            elif alert["type"] == "danger":
-                show_error(alert["message"])
-            elif alert["type"] == "info":
-                system_notify("Budget Info", alert["message"])
-            system_notify(alert["type"], alert["message"])
 
 def main():
     root = tk.Tk()

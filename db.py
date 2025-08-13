@@ -3,20 +3,31 @@ from contextlib import closing
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 import os
-from utils import get_next_id,save_data,load_data
+from utils import get_next_id, save_data, load_data
 from ml.model import train_model
-DB_NAME = "expenses.db" 
 
+DB_NAME = "expenses.db"
 
 def _get_conn():
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     return conn
 
+# ---------- Quick helpers used by alert system ----------
+def get_total_spent_between(start_date: str, end_date: str) -> float:
+    """
+    Inclusive date range. Dates must be 'YYYY-MM-DD'.
+    """
+    with closing(_get_conn()) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COALESCE(SUM(amount),0) as total FROM expenses WHERE date >= ? AND date <= ?",
+            (start_date, end_date),
+        )
+        return float(cur.fetchone()["total"])
+
+# ---------- Existing helpers (kept as-is) ----------
 def get_total_spent_for_month(month_str):
-    """
-    Returns the total spent for a given month in format YYYY-MM.
-    """
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
@@ -28,9 +39,6 @@ def get_total_spent_for_month(month_str):
     return total or 0.0
 
 def get_monthly_category_totals(month_str):
-    """
-    Returns a dictionary {category: total_amount} for the given month (YYYY-MM).
-    """
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
@@ -44,7 +52,7 @@ def get_monthly_category_totals(month_str):
 
 def get_total_budget():
     """
-    Returns the total budget (sum of all category budgets).
+    NOTE: Kept for backward-compat; overridden by meta total budget below if set.
     """
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -54,7 +62,6 @@ def get_total_budget():
     return total or 0.0
 
 def init_db():
-    """Create tables if they don't exist."""
     with closing(_get_conn()) as conn:
         cur = conn.cursor()
         cur.execute(
@@ -86,11 +93,8 @@ def init_db():
         )
         conn.commit()
 
-
 # ---------- Expense CRUD ----------
-
 def add_expense(date, amount, category, description):
-    """Insert a new expense into the SQLite database."""
     with closing(_get_conn()) as conn:
         cur = conn.cursor()
         cur.execute(
@@ -103,7 +107,6 @@ def add_expense(date, amount, category, description):
         conn.commit()
         new_id = cur.lastrowid
 
-    # Retrain model if category is provided (Stage 4)
     if category and category.strip():
         from ml.model import train_model
         csv_path = os.path.join("ml", "data.csv")
@@ -111,12 +114,9 @@ def add_expense(date, amount, category, description):
             train_model(extra_csv_path=csv_path)
         else:
             train_model()
-
     return new_id
 
-
 def get_expenses_for_month(year_month: str):
-    """Return list of rows (dicts) for expenses in YYYY-MM."""
     with closing(_get_conn()) as conn:
         cur = conn.cursor()
         cur.execute(
@@ -127,7 +127,6 @@ def get_expenses_for_month(year_month: str):
         return [dict(r) for r in rows]
 
 def get_monthly_category_totals(year_month: str):
-    """Return dict {category: total} for given YYYY-MM."""
     with closing(_get_conn()) as conn:
         cur = conn.cursor()
         cur.execute(
@@ -141,9 +140,6 @@ def get_monthly_category_totals(year_month: str):
         return out
 
 def get_monthly_series(months_back: int = 6):
-    """
-    Return list of (YYYY-MM, total) for the last `months_back` months, oldest -> newest.
-    """
     from datetime import date
     today = date.today()
     ym_list = []
@@ -167,13 +163,11 @@ def get_monthly_series(months_back: int = 6):
     return out
 
 def get_all_expenses() -> List[Dict]:
-    """Return all expenses as list of dicts, ordered by id."""
     with closing(_get_conn()) as conn:
         cur = conn.cursor()
         cur.execute("SELECT id, date, amount, category, description FROM expenses ORDER BY id ASC")
         rows = cur.fetchall()
         return [dict(r) for r in rows]
-
 
 def get_expense_by_id(expense_id: int) -> Optional[Dict]:
     with closing(_get_conn()) as conn:
@@ -181,7 +175,6 @@ def get_expense_by_id(expense_id: int) -> Optional[Dict]:
         cur.execute("SELECT id, date, amount, category, description FROM expenses WHERE id = ?", (expense_id,))
         row = cur.fetchone()
         return dict(row) if row else None
-
 
 def update_expense(expense_id: int, date: str, amount: float, category: str, description: str) -> bool:
     with closing(_get_conn()) as conn:
@@ -193,7 +186,6 @@ def update_expense(expense_id: int, date: str, amount: float, category: str, des
         conn.commit()
         return cur.rowcount > 0
 
-
 def delete_expense(expense_id: int) -> bool:
     with closing(_get_conn()) as conn:
         cur = conn.cursor()
@@ -201,14 +193,11 @@ def delete_expense(expense_id: int) -> bool:
         conn.commit()
         return cur.rowcount > 0
 
-
 # ---------- Budget helpers ----------
-
 TOTAL_BUDGET_KEY = "__TOTAL_BUDGET__"
-
+WEEKLY_BUDGET_KEY = "__WEEKLY_BUDGET__"
 
 def set_category_budget(category: str, limit_amount: float) -> None:
-    """Insert or update budget for a category. Stores category normalized (lowercase)."""
     with closing(_get_conn()) as conn:
         cur = conn.cursor()
         cat_norm = category.strip().lower()
@@ -219,16 +208,12 @@ def set_category_budget(category: str, limit_amount: float) -> None:
         )
         conn.commit()
 
-
 def get_category_budget(category: str) -> Optional[float]:
-    """Return the budget limit for a specific category, or None if not set."""
     with closing(_get_conn()) as conn:
         cur = conn.cursor()
-        # we stored budgets in lowercase; query case-insensitively to be safe
         cur.execute("SELECT limit_amount FROM budgets WHERE LOWER(category) = LOWER(?)", (category.strip(),))
         row = cur.fetchone()
         return float(row["limit_amount"]) if row else None
-
 
 def delete_category_budget(category: str) -> bool:
     with closing(_get_conn()) as conn:
@@ -237,17 +222,13 @@ def delete_category_budget(category: str) -> bool:
         conn.commit()
         return cur.rowcount > 0
 
-
 def get_all_budgets() -> List[Tuple[str, float]]:
-    """Return all budgets (category, limit_amount). category is returned as stored (lowercase)."""
     with closing(_get_conn()) as conn:
         cur = conn.cursor()
         cur.execute("SELECT category, limit_amount FROM budgets ORDER BY category COLLATE NOCASE")
         rows = cur.fetchall()
         return [(r["category"], float(r["limit_amount"])) for r in rows]
 
-
-# total budget storage in meta table (key, value)
 def set_total_budget(limit_amount: float) -> None:
     with closing(_get_conn()) as conn:
         cur = conn.cursor()
@@ -257,7 +238,6 @@ def set_total_budget(limit_amount: float) -> None:
         )
         conn.commit()
 
-
 def get_total_budget() -> Optional[float]:
     with closing(_get_conn()) as conn:
         cur = conn.cursor()
@@ -265,29 +245,39 @@ def get_total_budget() -> Optional[float]:
         row = cur.fetchone()
         return float(row["value"]) if row else None
 
+# NEW: Weekly budget (optional)
+def set_weekly_budget(limit_amount: float) -> None:
+    with closing(_get_conn()) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (WEEKLY_BUDGET_KEY, str(float(limit_amount))),
+        )
+        conn.commit()
+
+def get_weekly_budget() -> Optional[float]:
+    with closing(_get_conn()) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM meta WHERE key = ?", (WEEKLY_BUDGET_KEY,))
+        row = cur.fetchone()
+        return float(row["value"]) if row else None
 
 # ---------- Aggregation / Month calculations ----------
-
 def _month_from_date(date_text: str) -> str:
-    """Return YYYY-MM portion (assumes date_text is YYYY-MM-DD)."""
     try:
         dt = datetime.strptime(date_text, "%Y-%m-%d")
         return dt.strftime("%Y-%m")
     except Exception:
         return date_text[:7]
 
-
 def get_total_spent_for_month(year_month: str) -> float:
-    """year_month should be 'YYYY-MM'"""
     pattern = f"{year_month}%"
     with closing(_get_conn()) as conn:
         cur = conn.cursor()
         cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM expenses WHERE date LIKE ?", (pattern,))
         return float(cur.fetchone()["total"])
 
-
 def get_category_spent_for_month(category: str, year_month: str) -> float:
-    """Sum spent for a category in a month (case-insensitive category match)."""
     pattern = f"{year_month}%"
     with closing(_get_conn()) as conn:
         cur = conn.cursor()
@@ -297,14 +287,8 @@ def get_category_spent_for_month(category: str, year_month: str) -> float:
         )
         return float(cur.fetchone()["total"])
 
-
 # ---------- Budget check helper ----------
-
 def check_budget_alerts_for_new_or_update(category: str, amount: float, date: str, ignoring_expense_id: Optional[int] = None) -> List[str]:
-    """
-    Check whether adding/updating an expense of amount on date for category
-    would exceed category or total budgets for that month.
-    """
     alerts = []
     year_month = _month_from_date(date)
 
@@ -333,7 +317,6 @@ def check_budget_alerts_for_new_or_update(category: str, amount: float, date: st
     total_budget = get_total_budget()
     category_budget = get_category_budget(category)
 
-    # Evaluate projected totals after adding the new/updated amount
     proj_total = total_month + float(amount)
     proj_category = category_month + float(amount)
 
